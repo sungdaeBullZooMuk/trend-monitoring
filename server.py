@@ -725,8 +725,9 @@ def run():
     t.daemon = True
     t.start()
     
-    # 웹 서버 포트 8080 고정 기동
-    server_address = ('', 8080)
+    # 웹 서버 포트 기동 (Render/Railway 등 클라우드 호스팅 호환을 위해 PORT 환경변수 대응)
+    port = int(os.environ.get("PORT", 8080))
+    server_address = ('', port)
     
     # 소켓 재사용 옵션을 주어 프로세스 재기동 시 포트 점유 충돌 방지
     class ReusableTCPServer(socketserver.TCPServer):
@@ -736,7 +737,7 @@ def run():
         httpd = ReusableTCPServer(server_address, TrendHTTPHandler)
         print("====================================================")
         print("    TrendPulse 통합 백엔드 & DB 서버 가동 시작")
-        print("    접속 주소: http://localhost:8080")
+        print(f"    접속 주소: http://localhost:{port}")
         print("====================================================")
         httpd.serve_forever()
     except KeyboardInterrupt:
