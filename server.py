@@ -167,7 +167,7 @@ def scrape_rss_feeds():
                 # 네이트 실시간 키워드 JSON API를 직접 가져옵니다.
                 req_nate = urllib.request.Request(
                     'https://www.nate.com/js/data/jsonLiveKeywordDataV1.js',
-                    headers={'User-Agent': 'Mozilla/5.0'}
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 )
                 with urllib.request.urlopen(req_nate, timeout=8) as response:
                     js_data = response.read().decode('euc-kr')
@@ -212,7 +212,7 @@ def scrape_rss_feeds():
                     # --- 구글 트렌드 KR 일별 RSS 수집 ---
                     req_trends = urllib.request.Request(
                         'https://trends.google.co.kr/trends/trendingsearches/daily/rss?geo=KR',
-                        headers={'User-Agent': 'Mozilla/5.0'}
+                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                     )
                     with urllib.request.urlopen(req_trends, timeout=10) as response:
                         xml_data = response.read()
@@ -435,7 +435,7 @@ def scrape_rss_feeds():
                 print("[배치 스케줄러] 구글 뉴스 KR RSS 피드를 통해 속보를 동기화합니다...")
                 req_news = urllib.request.Request(
                     'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko',
-                    headers={'User-Agent': 'Mozilla/5.0'}
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 )
                 with urllib.request.urlopen(req_news, timeout=10) as response:
                     news_xml = response.read()
