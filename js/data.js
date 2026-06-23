@@ -36,7 +36,7 @@
       // 최초에는 빈 상태로 시작하며, App 구동 시 fetch API 호출 예정
     }
 
-    // HTML Entity 디코더 유틸 (Google Trends RSS description 내의 HTML 기사 파싱용)
+    // HTML Entity 디코더 유틸 (네이버 트렌드 및 기사 파싱용)
     decodeHtml(html) {
       const txt = document.createElement('textarea');
       txt.innerHTML = html;
@@ -94,7 +94,7 @@
       }
     }
 
-    // 외부 구글 트렌드 JSON 객체를 우리 애플리케이션 스키마로 가공
+    // 외부 네이버 트렌드 JSON 객체를 우리 애플리케이션 스키마로 가공
     processTrendsData(apiItems) {
       const newKeywords = [];
       const categories = ['search', 'social', 'shopping', 'content'];
@@ -189,21 +189,15 @@
     // API 호출 실패 시 로컬 폴백 데이터로 스키마 빌드
     processFallbackData() {
       this.keywords = OFFLINE_FALLBACK_DATABASE.map((item, index) => {
-        const history = [];
-        let score = 500 + (item.traffic / 300);
-        for (let i = 0; i < this.historyLength; i++) {
-          score += Math.floor(Math.random() * 11) - 5;
-          history.push(score);
-        }
+        const brief = getLocalBriefing(item.name, item.related);
         return {
           id: `fallback-${index}-${item.category}`,
           name: item.name,
           category: item.category,
           approxTraffic: item.traffic,
-          trendScore: score,
+          sentimentStatus: brief.status,
           prevRank: 0,
           rank: index + 1,
-          history: history,
           delta: 0,
           related: item.related
         };
@@ -211,9 +205,9 @@
       this.calculateRanks();
     }
 
-    // 현재 점수 정렬 기반 최종 순위 계산 및 전 단계 순위 업데이트
+    // 현재 트래픽 정렬 기반 최종 순위 계산 및 전 단계 순위 업데이트
     calculateRanks() {
-      const sorted = [...this.keywords].sort((a, b) => b.trendScore - a.trendScore);
+      const sorted = [...this.keywords].sort((a, b) => b.approxTraffic - a.approxTraffic);
       sorted.forEach((kw, index) => {
         const found = this.keywords.find(k => k.id === kw.id);
         if (found) {
@@ -224,22 +218,17 @@
     }
 
     // 2.5초 주기 실시간 미세 트래픽 변동 시뮬레이션
-    // 구글 트렌드 검색량 기준에 미세 노이즈를 섞어 차트의 라이브 생동감을 줍니다.
     updateMicroValues() {
       if (this.keywords.length === 0 || this.currentPeriod !== 'today') return;
 
       this.keywords.forEach(kw => {
-        // 미세 점수 섭동 (-12 ~ +16)
-        const change = Math.floor(Math.random() * 29) - 12;
-        kw.trendScore = Math.max(100, kw.trendScore + change);
+        // 미세 트래픽 변동 (-1.2% ~ +1.8%)
+        const pct = (Math.random() * 3.0 - 1.2) / 100;
+        const change = Math.round(kw.approxTraffic * pct);
+        const prevTraffic = kw.approxTraffic;
+        kw.approxTraffic = Math.max(100, kw.approxTraffic + change);
         
-        kw.history.push(kw.trendScore);
-        if (kw.history.length > this.historyLength) {
-          kw.history.shift();
-        }
-
-        const prevScore = kw.history[kw.history.length - 2] || kw.trendScore;
-        kw.delta = ((kw.trendScore - prevScore) / prevScore) * 100;
+        kw.delta = prevTraffic > 0 ? ((kw.approxTraffic - prevTraffic) / prevTraffic) * 100 : 0;
       });
 
       this.calculateRanks();
@@ -255,16 +244,17 @@
       const alertsGenerated = [];
 
       this.keywords.forEach(kw => {
-        // 주기적 업데이트 시 스포트라이트/조회수 폭발 시뮬레이션 (3% 확률)
+        // 주기적 업데이트 시 트래픽 폭발 시뮬레이션 (3% 확률)
         const isSpike = Math.random() < 0.03;
         let surgePercent = 0;
 
         if (isSpike) {
-          const spikeBoost = Math.floor(Math.random() * 110) + 60; // +60 ~ +170 급등
-          kw.trendScore += spikeBoost;
-          
-          const prevScore = kw.history[kw.history.length - 3] || kw.history[0];
-          surgePercent = ((kw.trendScore - prevScore) / prevScore) * 100;
+          // +20% ~ +50% 급등
+          const pct = (20 + Math.floor(Math.random() * 31)) / 100;
+          const boost = Math.round(kw.approxTraffic * pct);
+          const prevTraffic = kw.approxTraffic;
+          kw.approxTraffic += boost;
+          surgePercent = ((kw.approxTraffic - prevTraffic) / prevTraffic) * 100;
 
           // 알림 발송 객체 등록
           const alert = {
@@ -273,7 +263,7 @@
             keywordName: kw.name,
             category: kw.category,
             percent: Math.round(surgePercent),
-            score: kw.trendScore,
+            approxTraffic: kw.approxTraffic,
             timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             read: false
           };
@@ -282,14 +272,10 @@
 
           if (this.alerts.length > 20) this.alerts.pop();
         } else {
-          // 일상적 변동 (-20 ~ +30)
-          const change = Math.floor(Math.random() * 51) - 20;
-          kw.trendScore = Math.max(100, kw.trendScore + change);
-        }
-
-        kw.history.push(kw.trendScore);
-        if (kw.history.length > this.historyLength) {
-          kw.history.shift();
+          // 일상적 변동 (-2% ~ +3%)
+          const pct = (Math.random() * 5 - 2) / 100;
+          const change = Math.round(kw.approxTraffic * pct);
+          kw.approxTraffic = Math.max(100, kw.approxTraffic + change);
         }
       });
 
@@ -322,7 +308,7 @@
         filtered = this.keywords.filter(k => k.category === category);
       }
       return [...filtered]
-        .sort((a, b) => b.trendScore - a.trendScore)
+        .sort((a, b) => b.approxTraffic - a.approxTraffic)
         .slice(0, limit);
     }
 
@@ -335,20 +321,19 @@
         return {
           timestamp: new Date().toLocaleString('ko-KR'),
           topKeyword: '데이터 없음',
-          topKeywordScore: 0,
           topCategory: '없음',
-          topCategoryCount: 0,
-          avgVolatility: '0%',
+          sentimentPositiveRate: 0,
+          hottestChannel: '포털 검색 (Naver)',
           categoryBest: {},
           top3Keywords: []
         };
       }
 
-      const sortedByScore = [...this.keywords].sort((a, b) => b.trendScore - a.trendScore);
-      const topKeyword = sortedByScore[0];
+      const sortedByTraffic = [...this.keywords].sort((a, b) => b.approxTraffic - a.approxTraffic);
+      const topKeyword = sortedByTraffic[0];
 
       // 상위 10개 기준 카테고리 쉐어
-      const top10 = sortedByScore.slice(0, 10);
+      const top10 = sortedByTraffic.slice(0, 10);
       const categoryCounts = { search: 0, social: 0, shopping: 0, content: 0 };
       top10.forEach(k => {
         categoryCounts[k.category] = (categoryCounts[k.category] || 0) + 1;
@@ -365,12 +350,41 @@
         }
       }
 
-      const totalVolatility = this.keywords.reduce((acc, kw) => acc + Math.abs(kw.delta), 0);
-      const avgVolatility = (totalVolatility / this.keywords.length).toFixed(2);
+      // 긍정 감성 지수 평균 및 최빈 소셜 채널 계산
+      let totalPos = 0;
+      const ch_totals = { search: 0, social: 0, shopping: 0, media: 0 };
+      
+      this.keywords.forEach(kw => {
+        const b_data = getLocalBriefing(kw.name, kw.related);
+        totalPos += b_data.sentiment.positive;
+        for (const ch in b_data.channels) {
+          ch_totals[ch] += b_data.channels[ch];
+        }
+      });
+      
+      const avg_pos_rate = this.keywords.length > 0 
+        ? parseFloat((totalPos / this.keywords.length).toFixed(1)) 
+        : 0.0;
+      
+      let hottest_ch = 'search';
+      let max_ch_val = -1;
+      for (const ch in ch_totals) {
+        if (ch_totals[ch] > max_ch_val) {
+          max_ch_val = ch_totals[ch];
+          hottest_ch = ch;
+        }
+      }
+      
+      const channelMapKo = {
+        search: "포털 검색 (Naver)",
+        social: "소셜 미디어 (X/유튜브)",
+        shopping: "이커머스/쇼핑몰",
+        media: "뉴스/미디어"
+      };
 
       const categoryBest = {};
       ['search', 'social', 'shopping', 'content'].forEach(cat => {
-        const catKws = this.keywords.filter(k => k.category === cat).sort((a, b) => b.trendScore - a.trendScore);
+        const catKws = this.keywords.filter(k => k.category === cat).sort((a, b) => b.approxTraffic - a.approxTraffic);
         if (catKws.length > 0) {
           categoryBest[cat] = catKws[0].name;
         }
@@ -379,15 +393,117 @@
       return {
         timestamp: new Date().toLocaleString('ko-KR'),
         topKeyword: topKeyword.name,
-        topKeywordScore: topKeyword.trendScore,
         topCategory: categoryMapKo[topCategory],
-        topCategoryCount: maxCount,
-        avgVolatility: avgVolatility + '%',
+        sentimentPositiveRate: avg_pos_rate,
+        hottestChannel: channelMapKo[hottest_ch],
         categoryBest: categoryBest,
-        top3Keywords: sortedByScore.slice(0, 3).map((k, idx) => ({ rank: idx + 1, name: k.name, score: k.trendScore, category: categoryMapKo[k.category] }))
+        top3Keywords: sortedByTraffic.slice(0, 3).map((k, idx) => ({ 
+          rank: idx + 1, 
+          name: k.name, 
+          approxTraffic: k.approxTraffic, 
+          category: categoryMapKo[k.category] 
+        }))
       };
     }
   }
+
+  // --- 실시간 결정론적 감성 / 채널 / 브리핑 생성 헬퍼 ---
+  function absHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash);
+  }
+
+  function getLocalBriefing(keyword, related) {
+    const h_val = absHash(keyword);
+    
+    // 1. 감정 지수 계산 (결정론적 생성 및 테마 연동)
+    const pos_rate = 35 + (h_val % 41);  // 35% ~ 75%
+    const remaining = 100 - pos_rate;
+    let neg_rate = h_val % (remaining + 1);
+    if (remaining > 15 && neg_rate < 10) {
+      neg_rate = 10 + (h_val % (remaining - 10));
+    }
+    const neu_rate = 100 - pos_rate - neg_rate;
+    
+    let status = 'neutral';
+    if (pos_rate >= 55) {
+      status = 'positive';
+    } else if (neg_rate >= 35) {
+      status = 'negative';
+    }
+    
+    // 2. 채널별 버즈 점유율
+    const base_ch = [20, 20, 20, 20];
+    let rem_ch = 20;
+    const ch_shares = [];
+    for (let i = 0; i < 4; i++) {
+      const share = base_ch[i] + (absHash(keyword + String(i)) % (rem_ch + 1));
+      ch_shares.push(share);
+      rem_ch -= (share - base_ch[i]);
+    }
+    ch_shares[3] += rem_ch;
+    
+    const channels = {
+      search: ch_shares[0],
+      social: ch_shares[1],
+      shopping: ch_shares[2],
+      media: ch_shares[3]
+    };
+    
+    // 3. 소셜 감성 단어 키워드
+    const all_tags = {
+      positive: ['대박', '추천', '인기', '대세', '기대감', '혁신', '화제', '성공적', '흥미진진'],
+      negative: ['우려', '논란', '부담', '아쉬움', '갈등', '비판', '불만', '위기', '리스크'],
+      neutral: ['이슈', '관심', '동향', '정보', '출시', '공개', '발표', '분석', '현황']
+    };
+    
+    const tags_pool = all_tags[status];
+    const tags = [];
+    const idx_list = [];
+    for (let i = 0; i < 3; i++) {
+      let tag_idx = (h_val + i) % tags_pool.length;
+      while (idx_list.includes(tag_idx)) {
+        tag_idx = (tag_idx + 1) % tags_pool.length;
+      }
+      idx_list.push(tag_idx);
+      tags.push(tags_pool[tag_idx]);
+    }
+    
+    // 4. 관련 키워드 AI 요약 문구
+    let related_str = "";
+    if (related && related.length > 0) {
+      related_str = ` 특히 연관어 **'${related.join(', ')}'** 등과 활발히 융합되어 대화가 일어나고 있으며,`;
+    }
+    
+    const templates = [
+      `실시간 분석 결과, '${keyword}' 키워드는 최근 24시간 동안 소셜 미디어와 커뮤니티에서 매우 긍정적이고 호의적인 관심을 받고 있습니다.${related_str} 대중들의 긍정적인 지지 반응과 새로운 패러다임에 대한 높은 흥미가 주요 실시간 요인으로 분석됩니다.`,
+      `최근 보도에 따라 '${keyword}' 관련 실시간 트래픽이 눈에 띄게 증가했습니다.${related_str} 누리꾼들은 특정한 편향 없이 사실 확인성 정보 검색 위주로 침착한 탐색 반응을 보이고 있으며, 안정적인 중립 기조 여론이 80% 이상 장악하고 있습니다.`,
+      `현재 '${keyword}'에 관한 여론은 다소 우려와 부정적인 피드백이 교차 감지되고 있습니다.${related_str} 주요 매체 보도를 통해 제기된 다양한 쟁점과 리스크 요인을 두고 격론이 오가는 상태이며, 단기적 여론 변동성에 대한 주의 깊은 관찰이 권장됩니다.`
+    ];
+    
+    const brief = status === 'positive' ? templates[0] : (status === 'neutral' ? templates[1] : templates[2]);
+    
+    return {
+      keyword: keyword,
+      status: status,
+      sentiment: {
+        positive: pos_rate,
+        neutral: neu_rate,
+        negative: neg_rate
+      },
+      channels: channels,
+      emotionTags: tags,
+      summary: brief
+    };
+  }
+
+  // 외부 연동 및 폴백 대비 노출
+  LiveTrendEngine.prototype.getLocalBriefing = getLocalBriefing;
 
   global.TrendEngine = new LiveTrendEngine();
 

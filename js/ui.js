@@ -17,10 +17,10 @@
       this.categoryTitle = document.getElementById('category-title');
       this.categoryDesc = document.getElementById('category-desc');
       this.rankTimeIndicator = document.getElementById('rank-time-indicator');
-      this.chartFocusKeyword = document.getElementById('chart-focus-keyword');
+      this.chartFocusKeyword = document.getElementById('briefing-focus-keyword');
       this.mapTargetKeyword = document.getElementById('map-target-keyword');
       this.rankingsCardTitle = document.getElementById('rankings-card-title');
-      this.chartCardTitle = document.getElementById('chart-card-title');
+      this.chartCardTitle = document.getElementById('briefing-card-title');
       
       // Donut Chart Elements
       this.donutChartSvg = document.getElementById('donut-chart-svg');
@@ -28,21 +28,34 @@
       this.donutLegend = document.getElementById('donut-legend');
       
       // Stats Elements
-      this.statTopSurge = document.getElementById('stat-top-surge');
-      this.statTopCategory = document.getElementById('stat-top-category');
-      this.statAvgVolatility = document.getElementById('stat-avg-volatility');
+      this.statTopKeyword = document.getElementById('stat-top-keyword');
+      this.statAvgPosRate = document.getElementById('stat-avg-pos-rate');
+      this.statHotChannel = document.getElementById('stat-hot-channel');
       
       // Modals
       this.reportModal = document.getElementById('report-modal');
       this.reportModalBody = document.getElementById('report-modal-body');
       
+      // My Info Modals
+      this.myInfoModal = document.getElementById('my-info-modal');
+      this.myInfoNickname = document.getElementById('my-info-nickname');
+      this.myInfoCommentCount = document.getElementById('my-info-comment-count');
+      this.myInfoCommentsList = document.getElementById('my-info-comments-list');
+      
+      // Comments Elements
+      this.commentDrawer = document.getElementById('comment-drawer');
+      this.drawerKeywordName = document.getElementById('drawer-keyword-name');
+      this.drawerCommentsList = document.getElementById('drawer-comments-list');
+      
       // State variables
       this.selectedKeywordId = null;
+      this.isCommentInputFocused = false;
+      this.commentPollingInterval = null;
       this.categoryColors = {
-        search: '#00f0ff',  // Neon Blue
-        social: '#ff007f',  // Neon Pink
-        shopping: '#39ff14',// Neon Green
-        content: '#ff5e00'  // Neon Orange
+        search: '#3b82f6',  // Slate Blue
+        social: '#ec4899',  // Elegant Pink
+        shopping: '#10b981',// Elegant Green
+        content: '#f59e0b'  // Elegant Orange
       };
       
       // Canvas Network Map State
@@ -56,12 +69,26 @@
       this.init();
     }
 
+    updateThemeColors() {
+      const rootStyles = getComputedStyle(document.documentElement);
+      this.categoryColors = {
+        search: rootStyles.getPropertyValue('--neon-blue').trim() || '#3b82f6',
+        social: rootStyles.getPropertyValue('--neon-pink').trim() || '#ec4899',
+        shopping: rootStyles.getPropertyValue('--neon-green').trim() || '#10b981',
+        content: rootStyles.getPropertyValue('--neon-orange').trim() || '#f59e0b'
+      };
+    }
+
     init() {
+      // 테마 변경에 대비한 동적 색상 업데이트
+      this.updateThemeColors();
+
       // 시계 작동
       this.startClock();
       
       // 캔버스 사이즈 및 이벤트 초기화
       this.setupCanvas();
+      this.initCanvasEvents();
       
       // 글로벌 창 크기 조절 시 대응
       window.addEventListener('resize', () => {
@@ -101,7 +128,7 @@
       this.rankingsList.querySelectorAll('.rank-item').forEach(item => {
         const id = item.dataset.keywordId;
         prevItemsMap.set(id, {
-          score: parseInt(item.dataset.score)
+          approxTraffic: parseInt(item.dataset.approxTraffic) || 0
         });
       });
 
@@ -124,7 +151,7 @@
         item.className = `rank-item ${kw.id === this.selectedKeywordId ? 'active' : ''}`;
         item.dataset.keywordId = kw.id;
         item.dataset.rank = idx + 1;
-        item.dataset.score = kw.trendScore;
+        item.dataset.approxTraffic = kw.approxTraffic;
 
         // 순위 변동 아이콘
         let changeHtml = '';
@@ -148,23 +175,24 @@
         // 마이크로 변화 감지 깜빡임
         const prevInfo = prevItemsMap.get(kw.id);
         if (prevInfo) {
-          if (kw.trendScore > prevInfo.score) {
+          if (kw.approxTraffic > prevInfo.approxTraffic) {
             item.classList.add('flash-up');
             setTimeout(() => item.classList.remove('flash-up'), 600);
-          } else if (kw.trendScore < prevInfo.score) {
+          } else if (kw.approxTraffic < prevInfo.approxTraffic) {
             item.classList.add('flash-down');
             setTimeout(() => item.classList.remove('flash-down'), 600);
           }
         }
 
         const categoryMap = { search: '검색', social: '소셜', shopping: '쇼핑', content: '미디어' };
+        const sentimentMapKo = { positive: '🟢 긍정', neutral: '🟡 중립', negative: '🔴 우려' };
 
         item.innerHTML = `
           <div class="rank-number">${idx + 1}</div>
           <div class="rank-keyword">${kw.name}</div>
           <span class="category-badge badge-${kw.category}">${categoryMap[kw.category]}</span>
-          <div class="trend-score-group">
-            <span class="trend-score">${Math.round(kw.trendScore)}</span>
+          <div class="rank-sentiment-group">
+            <span class="sentiment-badge badge-sent-${kw.sentimentStatus}">${sentimentMapKo[kw.sentimentStatus] || '중립'}</span>
             <span class="trend-change ${changeClass}">${changeHtml}</span>
           </div>
         `;
@@ -187,9 +215,6 @@
     }
 
     selectKeyword(id) {
-      const activeItem = this.rankingsList.querySelector(`.rank-item.active`);
-      if (activeItem) activeItem.classList.remove('active');
-
       this.selectedKeywordId = id;
       const newItem = this.rankingsList.querySelector(`.rank-item[data-keyword-id="${id}"]`);
       if (newItem) newItem.classList.add('active');
@@ -200,222 +225,113 @@
         this.mapTargetKeyword.textContent = kw.name;
         this.renderLiveChart();
         this.triggerMapRebuild(kw);
+        
+        // 키워드 상세 댓글 드로어 열기 및 갱신
+        this.openCommentDrawer(kw.name);
       }
     }
 
-    // --- 2. SVG 꺾은선 차트 렌더링 ---
+    // --- 2. AI 브리핑 및 실시간 감성 데이터 렌더링 ---
     renderLiveChart() {
-      const width = this.trendChartSvg.clientWidth || 500;
-      const height = this.trendChartSvg.clientHeight || 280;
-      
-      this.trendChartSvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-      this.trendChartSvg.innerHTML = '';
-
       const selectedKw = global.TrendEngine.getKeywordDetails(this.selectedKeywordId);
       if (!selectedKw) return;
 
-      const padding = { top: 30, right: 30, bottom: 40, left: 50 };
-      const chartWidth = width - padding.left - padding.right;
-      const chartHeight = height - padding.top - padding.bottom;
+      if (this.chartFocusKeyword) {
+        this.chartFocusKeyword.textContent = selectedKw.name;
+      }
 
-      const datasets = [];
-      datasets.push({
-        id: selectedKw.id,
-        name: selectedKw.name,
-        history: selectedKw.history,
-        color: this.categoryColors[selectedKw.category],
-        isMain: true
-      });
-
-      // 비교군으로 top 2 추가
-      const topRankings = global.TrendEngine.getTopKeywords(global.TrendEngine.currentCategory, 3);
-      topRankings.forEach(r => {
-        if (r.id !== selectedKw.id && datasets.length < 3) {
-          datasets.push({
-            id: r.id,
-            name: r.name,
-            history: r.history,
-            color: this.categoryColors[r.category] + '33', // 20% opacity
-            isMain: false
+      // API 호출 또는 로컬 폴백을 통한 AI 브리핑 및 감성 데이터 확보
+      if (global.TrendEngine.isOffline) {
+        const briefData = global.TrendEngine.getLocalBriefing(selectedKw.name, selectedKw.related);
+        this.updateBriefingUI(briefData);
+      } else {
+        fetch(`/api/briefing?keyword=${encodeURIComponent(selectedKw.name)}`)
+          .then(res => {
+            if (!res.ok) throw new Error('Briefing API error');
+            return res.json();
+          })
+          .then(data => {
+            this.updateBriefingUI(data);
+          })
+          .catch(err => {
+            console.warn('Briefing API 로드 실패, 로컬 폴백을 사용합니다.', err);
+            const briefData = global.TrendEngine.getLocalBriefing(selectedKw.name, selectedKw.related);
+            this.updateBriefingUI(briefData);
           });
-        }
-      });
-
-      let minVal = Infinity;
-      let maxVal = -Infinity;
-      datasets.forEach(d => {
-        d.history.forEach(v => {
-          if (v < minVal) minVal = v;
-          if (v > maxVal) maxVal = v;
-        });
-      });
-
-      const diff = maxVal - minVal;
-      minVal = Math.max(0, Math.floor(minVal - (diff * 0.1 || 20)));
-      maxVal = Math.ceil(maxVal + (diff * 0.1 || 20));
-
-      const pointsCount = selectedKw.history.length;
-
-      // 그리드 가로선 및 라벨
-      const gridCount = 5;
-      for (let i = 0; i <= gridCount; i++) {
-        const y = padding.top + (chartHeight / gridCount) * i;
-        const val = Math.round(maxVal - ((maxVal - minVal) / gridCount) * i);
-        
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', padding.left);
-        line.setAttribute('y1', y);
-        line.setAttribute('x2', width - padding.right);
-        line.setAttribute('y2', y);
-        line.setAttribute('stroke', 'rgba(255, 255, 255, 0.05)');
-        line.setAttribute('stroke-dasharray', '4, 4');
-        this.trendChartSvg.appendChild(line);
-
-        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        text.setAttribute('x', padding.left - 10);
-        text.setAttribute('y', y + 4);
-        text.setAttribute('fill', 'var(--text-muted)');
-        text.setAttribute('font-size', '10px');
-        text.setAttribute('text-anchor', 'end');
-        text.setAttribute('font-family', 'monospace');
-        text.textContent = val;
-        this.trendChartSvg.appendChild(text);
       }
-
-      // X축 타임스탬프 라벨 (DB 백엔드에서 반환된 실제 시간/날짜/월 기준 연동)
-      const customLabels = selectedKw.labels || [];
-      for (let i = 0; i < pointsCount; i++) {
-        // 텍스트가 겹치는 것을 막기 위해 일정 간격(예: 3개 간격)으로 그립니다. 마지막 인덱스는 강제 노출.
-        if (i % 3 === 0 || i === pointsCount - 1) {
-          const x = padding.left + (chartWidth / (pointsCount - 1)) * i;
-          const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          text.setAttribute('x', x);
-          text.setAttribute('y', height - padding.bottom + 18);
-          text.setAttribute('fill', 'var(--text-muted)');
-          text.setAttribute('font-size', '9px');
-          text.setAttribute('text-anchor', 'middle');
-          
-          if (customLabels[i] !== undefined) {
-            text.textContent = customLabels[i];
-          } else if (global.TrendEngine.currentPeriod === 'today') {
-            const labelSec = (pointsCount - 1 - i) * 2.5;
-            text.textContent = labelSec === 0 ? 'LIVE' : `-${labelSec}초`;
-          } else {
-            text.textContent = '';
-          }
-          this.trendChartSvg.appendChild(text);
-        }
-      }
-
-      // 그라디언트 정의
-      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-      datasets.forEach(d => {
-        if (!d.isMain) return;
-        const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
-        grad.setAttribute('id', `area-grad-${d.id}`);
-        grad.setAttribute('x1', '0');
-        grad.setAttribute('y1', '0');
-        grad.setAttribute('x2', '0');
-        grad.setAttribute('y2', '1');
-        
-        const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-        stop1.setAttribute('offset', '0%');
-        stop1.setAttribute('stop-color', d.color);
-        stop1.setAttribute('stop-opacity', '0.22');
-
-        const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-        stop2.setAttribute('offset', '100%');
-        stop2.setAttribute('stop-color', d.color);
-        stop2.setAttribute('stop-opacity', '0');
-
-        grad.appendChild(stop1);
-        grad.appendChild(stop2);
-        defs.appendChild(grad);
-      });
-      this.trendChartSvg.appendChild(defs);
-
-      // 드로잉 루프
-      datasets.forEach(d => {
-        const points = [];
-        d.history.forEach((val, idx) => {
-          const x = padding.left + (chartWidth / (pointsCount - 1)) * idx;
-          const y = padding.top + chartHeight - ((val - minVal) / (maxVal - minVal)) * chartHeight;
-          points.push({ x, y, value: val });
-        });
-
-        let pathStr = '';
-        points.forEach((p, idx) => {
-          if (idx === 0) {
-            pathStr += `M ${p.x} ${p.y}`;
-          } else {
-            const prev = points[idx - 1];
-            const cp1x = prev.x + (p.x - prev.x) / 2;
-            const cp1y = prev.y;
-            const cp2x = prev.x + (p.x - prev.x) / 2;
-            const cp2y = p.y;
-            pathStr += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p.x} ${p.y}`;
-          }
-        });
-
-        if (d.isMain) {
-          const areaPathStr = `${pathStr} L ${points[points.length - 1].x} ${height - padding.bottom} L ${points[0].x} ${height - padding.bottom} Z`;
-          const areaPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-          areaPath.setAttribute('d', areaPathStr);
-          areaPath.setAttribute('fill', `url(#area-grad-${d.id})`);
-          this.trendChartSvg.appendChild(areaPath);
-        }
-
-        const linePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        linePath.setAttribute('d', pathStr);
-        linePath.setAttribute('fill', 'none');
-        linePath.setAttribute('stroke', d.color);
-        linePath.setAttribute('stroke-width', d.isMain ? '3' : '1.5');
-        linePath.setAttribute('stroke-linecap', 'round');
-        this.trendChartSvg.appendChild(linePath);
-
-        // 마지막 데이터 맥박 애니메이션 (오늘/실시간 모드일 때만 활성화)
-        if (d.isMain && points.length > 0 && global.TrendEngine.currentPeriod === 'today') {
-          const p = points[points.length - 1];
-          const pulseG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-          
-          const pulseCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          pulseCircle.setAttribute('cx', p.x);
-          pulseCircle.setAttribute('cy', p.y);
-          pulseCircle.setAttribute('r', '8');
-          pulseCircle.setAttribute('fill', d.color);
-          pulseCircle.setAttribute('opacity', '0.4');
-          
-          const animate = document.createElementNS('http://www.w3.org/2000/svg', 'animate');
-          animate.setAttribute('attributeName', 'r');
-          animate.setAttribute('values', '4;14;4');
-          animate.setAttribute('dur', '1.8s');
-          animate.setAttribute('repeatCount', 'indefinite');
-          
-          const animateOp = document.createElementNS('http://www.w3.org/2000/svg', 'animate');
-          animateOp.setAttribute('attributeName', 'opacity');
-          animateOp.setAttribute('values', '0.7;0;0.7');
-          animateOp.setAttribute('dur', '1.8s');
-          animateOp.setAttribute('repeatCount', 'indefinite');
-          
-          pulseCircle.appendChild(animate);
-          pulseCircle.appendChild(animateOp);
-          
-          const dotCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          dotCircle.setAttribute('cx', p.x);
-          dotCircle.setAttribute('cy', p.y);
-          dotCircle.setAttribute('r', '4');
-          dotCircle.setAttribute('fill', '#ffffff');
-          dotCircle.setAttribute('stroke', d.color);
-          dotCircle.setAttribute('stroke-width', '2');
-          
-          pulseG.appendChild(pulseCircle);
-          pulseG.appendChild(dotCircle);
-          this.trendChartSvg.appendChild(pulseG);
-        }
-      });
     }
 
-    // --- 3. 실시간 구글 뉴스 피드 스트리밍 렌더링 ---
+    updateBriefingUI(data) {
+      if (!data) return;
+
+      // 1. AI 요약 브리핑 텍스트 렌더링 (마크다운 ** 강조 변환)
+      const briefingTextEl = document.getElementById('ai-briefing-text');
+      if (briefingTextEl) {
+        let html = data.summary || '';
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        briefingTextEl.innerHTML = html;
+      }
+
+      // 2. 소셜 감성 바 업데이트
+      const posBar = document.getElementById('sentiment-pos');
+      const neuBar = document.getElementById('sentiment-neu');
+      const negBar = document.getElementById('sentiment-neg');
+      
+      const posVal = document.getElementById('val-sent-pos');
+      const neuVal = document.getElementById('val-sent-neu');
+      const negVal = document.getElementById('val-sent-neg');
+
+      if (data.sentiment) {
+        const pos = data.sentiment.positive || 0;
+        const neu = data.sentiment.neutral || 0;
+        const neg = data.sentiment.negative || 0;
+
+        if (posBar) posBar.style.width = `${pos}%`;
+        if (neuBar) neuBar.style.width = `${neu}%`;
+        if (negBar) negBar.style.width = `${neg}%`;
+
+        if (posVal) posVal.textContent = `${pos}%`;
+        if (neuVal) neuVal.textContent = `${neu}%`;
+        if (negVal) negVal.textContent = `${neg}%`;
+      }
+
+      // 3. 소셜 채널 게이지바 업데이트
+      const chBars = {
+        search: document.getElementById('bar-ch-search'),
+        social: document.getElementById('bar-ch-social'),
+        shopping: document.getElementById('bar-ch-shopping'),
+        media: document.getElementById('bar-ch-media')
+      };
+      
+      const chVals = {
+        search: document.getElementById('val-ch-search'),
+        social: document.getElementById('val-ch-social'),
+        shopping: document.getElementById('val-ch-shopping'),
+        media: document.getElementById('val-ch-media')
+      };
+
+      if (data.channels) {
+        for (const ch in chBars) {
+          const val = data.channels[ch] || 0;
+          if (chBars[ch]) chBars[ch].style.width = `${val}%`;
+          if (chVals[ch]) chVals[ch].textContent = `${val}%`;
+        }
+      }
+
+      // 4. 감성 태그 클라우드 업데이트
+      const tagsListEl = document.getElementById('emotion-tags-list');
+      if (tagsListEl && data.emotionTags) {
+        tagsListEl.innerHTML = '';
+        data.emotionTags.forEach(tag => {
+          const badge = document.createElement('span');
+          badge.className = `emotion-tag-badge tag-sent-${data.status}`;
+          badge.textContent = `#${tag}`;
+          tagsListEl.appendChild(badge);
+        });
+      }
+    }
+
+    // --- 3. 실시간 네이버 뉴스 피드 스트리밍 렌더링 ---
     renderBuzzFeed(rankings) {
       if (this.buzzContainer.children.length > 0 && this.buzzContainer.querySelector('div[style*="text-align"]')) {
         this.buzzContainer.innerHTML = '';
@@ -495,13 +411,65 @@
     // --- 4. 인터랙티브 연관어 맵 (Canvas Physics Simulator) ---
     setupCanvas() {
       const container = this.canvas.parentNode;
-      this.canvas.width = container.clientWidth;
-      this.canvas.height = container.clientHeight || 280;
+      const width = container.clientWidth;
+      const height = container.clientHeight || 280;
       
+      const dpr = window.devicePixelRatio || 1;
+      this.canvas.width = width * dpr;
+      this.canvas.height = height * dpr;
+      
+      this.canvas.style.width = width + 'px';
+      this.canvas.style.height = height + 'px';
+      
+      this.ctx.resetTransform();
+      this.ctx.scale(dpr, dpr);
+    }
+
+    initCanvasEvents() {
       this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
       this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
       this.canvas.addEventListener('mouseup', () => this.handleMouseUp());
       this.canvas.addEventListener('mouseleave', () => this.handleMouseUp());
+      
+      // 모바일 터치 이벤트 바인딩 (노드 드래그 시 스크롤 간섭 방지 처리 포함)
+      this.canvas.addEventListener('touchstart', (e) => {
+        const touch = e.touches[0];
+        if (!touch) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = touch.clientX - rect.left;
+        const my = touch.clientY - rect.top;
+        
+        this.mouse.x = mx;
+        this.mouse.y = my;
+        this.mouse.isDown = true;
+
+        this.draggedNode = null;
+        for (let i = this.nodes.length - 1; i >= 0; i--) {
+          const node = this.nodes[i];
+          const dx = node.x - mx;
+          const dy = node.y - my;
+          if (Math.hypot(dx, dy) < node.radius) {
+            this.draggedNode = node;
+            e.preventDefault(); // 노드를 선택한 경우에만 화면 스크롤 기본 동작 차단
+            break;
+          }
+        }
+      }, { passive: false });
+
+      this.canvas.addEventListener('touchmove', (e) => {
+        if (!this.draggedNode || !this.mouse.isDown) return;
+        const touch = e.touches[0];
+        if (!touch) return;
+        
+        e.preventDefault(); // 노드 드래그 중에는 스크롤 차단
+        
+        const rect = this.canvas.getBoundingClientRect();
+        this.mouse.x = touch.clientX - rect.left;
+        this.mouse.y = touch.clientY - rect.top;
+      }, { passive: false });
+
+      this.canvas.addEventListener('touchend', () => this.handleMouseUp());
+      this.canvas.addEventListener('touchcancel', () => this.handleMouseUp());
       
       if (!this.physicsStarted) {
         this.physicsStarted = true;
@@ -510,8 +478,8 @@
     }
 
     triggerMapRebuild(kw) {
-      const cx = this.canvas.width / 2;
-      const cy = this.canvas.height / 2;
+      const cx = this.canvas.clientWidth / 2;
+      const cy = (this.canvas.clientHeight || 280) / 2;
       
       this.nodes = [];
       this.links = [];
@@ -530,7 +498,7 @@
       };
       this.nodes.push(centerNode);
 
-      // 구글 트렌드 연관 단어 렌더링
+      // 네이버 트렌드 연관 단어 렌더링
       kw.related.forEach((term, idx) => {
         const angle = (idx / kw.related.length) * Math.PI * 2;
         const dist = 90 + Math.random() * 25;
@@ -598,7 +566,7 @@
           if (match) {
             this.selectKeyword(match.id);
           } else {
-            // 진짜 네이버/구글 검색창을 새 탭으로 띄워 사용자 피드백 연계
+            // 진짜 네이버 검색창을 새 탭으로 띄워 사용자 피드백 연계
             const searchUrl = `https://search.naver.com/search.naver?query=${encodeURIComponent(clickedLabel)}`;
             window.open(searchUrl, '_blank');
             
@@ -624,8 +592,8 @@
     }
 
     updatePhysics() {
-      const width = this.canvas.width;
-      const height = this.canvas.height;
+      const width = this.canvas.clientWidth;
+      const height = this.canvas.clientHeight || 280;
       const cx = width / 2;
       const cy = height / 2;
 
@@ -696,9 +664,11 @@
     }
 
     drawNetworkMap() {
-      const width = this.canvas.width;
-      const height = this.canvas.height;
+      const width = this.canvas.clientWidth;
+      const height = this.canvas.clientHeight || 280;
       this.ctx.clearRect(0, 0, width, height);
+
+      const isLight = document.documentElement.getAttribute('data-theme') === 'light';
 
       // 선 그리기
       this.links.forEach(link => {
@@ -708,7 +678,7 @@
         
         const grad = this.ctx.createLinearGradient(link.source.x, link.source.y, link.target.x, link.target.y);
         grad.addColorStop(0, link.source.color);
-        grad.addColorStop(1, 'rgba(255, 255, 255, 0.05)');
+        grad.addColorStop(1, isLight ? 'rgba(15, 23, 42, 0.05)' : 'rgba(255, 255, 255, 0.05)');
         
         this.ctx.strokeStyle = grad;
         this.ctx.lineWidth = 1.5;
@@ -722,11 +692,11 @@
         
         if (node.isTarget) {
           this.ctx.fillStyle = node.color;
-          this.ctx.shadowBlur = 15;
+          this.ctx.shadowBlur = 12;
           this.ctx.shadowColor = node.color;
         } else {
-          this.ctx.fillStyle = 'rgba(22, 30, 52, 0.8)';
-          this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+          this.ctx.fillStyle = isLight ? '#ffffff' : 'rgba(22, 30, 52, 0.8)';
+          this.ctx.strokeStyle = isLight ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.15)';
           this.ctx.lineWidth = 1;
           this.ctx.shadowBlur = 0;
         }
@@ -735,7 +705,7 @@
         if (!node.isTarget) this.ctx.stroke();
         
         this.ctx.shadowBlur = 0;
-        this.ctx.fillStyle = '#ffffff';
+        this.ctx.fillStyle = node.isTarget ? '#ffffff' : (isLight ? '#0f172a' : '#ffffff');
         this.ctx.font = node.isTarget ? 'bold 11px var(--font-family)' : '10px var(--font-family)';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
@@ -788,9 +758,9 @@
     renderSummaryStats() {
       const stats = global.TrendEngine.generateReportData();
       
-      this.statTopSurge.textContent = stats.topKeyword;
-      this.statTopCategory.textContent = stats.topCategory;
-      this.statAvgVolatility.textContent = stats.avgVolatility;
+      if (this.statTopKeyword) this.statTopKeyword.textContent = stats.topKeyword;
+      if (this.statAvgPosRate) this.statAvgPosRate.textContent = `${stats.sentimentPositiveRate}%`;
+      if (this.statHotChannel) this.statHotChannel.textContent = stats.hottestChannel;
       
       // 카테고리 도넛 차트 업데이트 실행
       this.renderCategoryDonutChart();
@@ -884,10 +854,11 @@
             slice.style.opacity = '0.3';
           }
         });
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
         legendItems.forEach(item => {
           if (item.dataset.category === cat) {
-            item.style.background = 'rgba(255, 255, 255, 0.05)';
-            item.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+            item.style.background = isLight ? 'rgba(15, 23, 42, 0.04)' : 'rgba(255, 255, 255, 0.05)';
+            item.style.borderColor = isLight ? 'rgba(15, 23, 42, 0.08)' : 'rgba(255, 255, 255, 0.08)';
           } else {
             item.style.opacity = '0.4';
           }
@@ -979,20 +950,21 @@
       
       this.reportModalBody.innerHTML = `
         <div class="report-summary-box">
-          <h3>AI 실시간 요약</h3>
-          <p>현 시각 국내 트렌드 스캔 결과 가장 많은 유동이 감지된 트렌드는 <strong>"${stats.topKeyword}"</strong>(상대지수 ${Math.round(stats.topKeywordScore)}pt)입니다. 
-          최근에는 <strong>"${stats.topCategory}"</strong> 관련 온라인 지수가 전반적인 시장 점유율(${stats.topCategoryCount}/10) 우위를 달성하고 있으며, 
-          대시보드의 종합 변동지수는 <strong>${stats.avgVolatility}</strong>로 대내외적인 실시간 이슈 발생 및 API 동기화가 활성화 상태입니다.</p>
+          <h3>AI 실시간 트렌드 보고서</h3>
+          <p>현 시각 국내 트렌드 감지 결과 대중의 최선호 토픽은 <strong>"${stats.topKeyword}"</strong>입니다. 
+          최근에는 <strong>"${stats.topCategory}"</strong> 관련 온라인 활동이 두드러지고 있으며, 
+          대중 평균 긍정 여론은 <strong>${stats.sentimentPositiveRate}%</strong>로 평가됩니다. 
+          가장 대화가 뜨거운 최대 버즈 채널은 <strong>${stats.hottestChannel}</strong>로 나타났습니다.</p>
         </div>
 
         <div class="report-grid">
           <div class="report-card-mini">
-            <h4>주요 지배 카테고리</h4>
-            <div class="value" style="color: var(--neon-blue);">${stats.topCategory}</div>
+            <h4>종합 대중 긍정률</h4>
+            <div class="value" style="color: var(--neon-green);">${stats.sentimentPositiveRate}%</div>
           </div>
           <div class="report-card-mini">
-            <h4>평균 트렌드 변동도</h4>
-            <div class="value" style="color: var(--neon-pink);">${stats.avgVolatility}</div>
+            <h4>최대 소셜 채널</h4>
+            <div class="value" style="color: var(--neon-blue);">${stats.hottestChannel}</div>
           </div>
         </div>
 
@@ -1019,12 +991,12 @@
         </div>
 
         <div>
-          <h3 class="panel-section-title" style="font-size: 14px; margin-bottom: 10px;">종합 검색 및 트래픽 TOP 3</h3>
+          <h3 class="panel-section-title" style="font-size: 14px; margin-bottom: 10px;">종합 트래픽 TOP 3</h3>
           <div class="report-top-list">
             ${stats.top3Keywords.map(k => `
               <div class="report-top-item">
                 <span><strong>${k.rank}위</strong> ${k.name} (${k.category})</span>
-                <span style="font-family: monospace;">${Math.round(k.score)} pt</span>
+                <span style="font-family: monospace;">${this.formatTraffic(k.approxTraffic)}</span>
               </div>
             `).join('')}
           </div>
@@ -1036,6 +1008,8 @@
 
     // --- 이벤트 핸들러 ---
     handleMicroUpdate(rankings) {
+      if (this.isCommentInputFocused) return;
+      
       this.renderRankings(rankings);
       this.renderLiveChart();
       this.renderSummaryStats();
@@ -1047,6 +1021,8 @@
     }
 
     handleRankUpdate(data) {
+      if (this.isCommentInputFocused) return;
+      
       this.renderRankings(data.rankings);
       this.renderLiveChart();
       this.renderAlertsFeed();
@@ -1075,8 +1051,8 @@
       };
       
       const descs = {
-        all: `구글 인기 검색어 및 주요 이슈 데이터를 종합 분석하여 ${p.descSuffix} 트렌드를 모니터링합니다.`,
-        search: `국내 포털 및 구글 인기 검색 키워드를 분석하여 ${p.descSuffix} 검색 순위를 제공합니다.`,
+        all: `네이버 인기 검색어 및 주요 이슈 데이터를 종합 분석하여 ${p.descSuffix} 트렌드를 모니터링합니다.`,
+        search: `국내 포털 및 네이버 인기 검색 키워드를 분석하여 ${p.descSuffix} 검색 순위를 제공합니다.`,
         social: `주요 소셜 미디어 플랫폼과 커뮤니티의 언급량을 분석하여 ${p.descSuffix} 화제성을 감지합니다.`,
         shopping: `급부상하는 구매 아이템 및 기획전 데이터를 분석하여 ${p.descSuffix} 소비 성향을 반영합니다.`,
         content: `실시간 동영상 인기 순위 및 방송 동향을 분석하여 ${p.descSuffix} 미디어 인기도를 측정합니다.`
@@ -1097,10 +1073,10 @@
       this.categoryDesc.textContent = textData.desc;
       
       const cardTitles = {
-        today: { rankings: '오늘의 트렌드 순위 (TOP 10)', chart: '오늘의 스코어 추이 분석' },
-        week: { rankings: '주간 트렌드 순위 (TOP 10)', chart: '주간 스코어 추이 분석' },
-        month: { rankings: '월간 트렌드 순위 (TOP 10)', chart: '월간 스코어 추이 분석' },
-        year: { rankings: '연간 트렌드 순위 (TOP 10)', chart: '연간 스코어 추이 분석' }
+        today: { rankings: '오늘의 트렌드 순위 (TOP 10)', chart: 'AI 트렌드 요약 및 소셜 여론 분석' },
+        week: { rankings: '주간 트렌드 순위 (TOP 10)', chart: 'AI 트렌드 요약 및 소셜 여론 분석' },
+        month: { rankings: '월간 트렌드 순위 (TOP 10)', chart: 'AI 트렌드 요약 및 소셜 여론 분석' },
+        year: { rankings: '연간 트렌드 순위 (TOP 10)', chart: 'AI 트렌드 요약 및 소셜 여론 분석' }
       };
       const ct = cardTitles[period] || cardTitles.today;
       
@@ -1112,7 +1088,7 @@
       }
       if (this.chartCardTitle) {
         this.chartCardTitle.innerHTML = `
-          <svg class="card-title-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"></path></svg>
+          <svg class="card-title-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
           ${ct.chart}
         `;
       }
@@ -1122,6 +1098,292 @@
       if (rankings.length > 0) {
         this.selectKeyword(rankings[0].id);
       }
+    }
+
+    openCommentDrawer(keywordName) {
+      if (!this.commentDrawer) return;
+
+      this.drawerKeywordName.textContent = keywordName;
+      this.commentDrawer.classList.add('open');
+
+      // Autofill nickname from localStorage
+      const authorInput = document.getElementById('comment-author');
+      if (authorInput && !authorInput.value) {
+        authorInput.value = localStorage.getItem('my_nickname') || '';
+      }
+
+      // 기존 폴링 정지 후 새 키워드 폴링 가동
+      if (this.commentPollingInterval) {
+        clearInterval(this.commentPollingInterval);
+      }
+
+      this.fetchComments(keywordName);
+      
+      this.commentPollingInterval = setInterval(() => {
+        this.fetchComments(keywordName);
+      }, 5000);
+    }
+
+    closeCommentDrawer() {
+      if (!this.commentDrawer) return;
+      this.commentDrawer.classList.remove('open');
+      if (this.commentPollingInterval) {
+        clearInterval(this.commentPollingInterval);
+        this.commentPollingInterval = null;
+      }
+    }
+
+    fetchComments(keywordName) {
+      if (!this.drawerCommentsList) return;
+
+      fetch(`/api/comments?keyword=${encodeURIComponent(keywordName)}`)
+        .then(res => res.json())
+        .then(comments => {
+          this.drawerCommentsList.innerHTML = '';
+          
+          if (comments.length === 0) {
+            this.drawerCommentsList.innerHTML = '<div style="text-align: center; color: var(--text-muted); margin-top: 100px; font-size: 13px;">이 키워드에 첫 톡을 달아 의견을 공유해보세요!</div>';
+            return;
+          }
+
+          comments.forEach(comment => {
+            const date = new Date(comment.timestamp);
+            const timeStr = date.toLocaleDateString('ko-KR', {
+              month: 'numeric',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false
+            });
+
+            const bubble = document.createElement('div');
+            bubble.className = 'comment-bubble';
+            bubble.innerHTML = `
+              <div class="comment-meta">
+                <span class="comment-author">${comment.author}</span>
+                <button class="comment-delete-btn" data-comment-id="${comment.id}">&times;</button>
+              </div>
+              <div class="comment-text">${comment.content}</div>
+              <span class="comment-time">${timeStr}</span>
+            `;
+
+            // 삭제 버튼 바인딩
+            const deleteBtn = bubble.querySelector('.comment-delete-btn');
+            deleteBtn.addEventListener('click', () => {
+              this.deleteComment(comment.id, keywordName);
+            });
+
+            this.drawerCommentsList.appendChild(bubble);
+          });
+          
+          // 항상 스크롤을 최하단으로 이동
+          this.drawerCommentsList.scrollTop = this.drawerCommentsList.scrollHeight;
+        })
+        .catch(err => {
+          console.error('댓글 로딩 실패:', err);
+        });
+    }
+
+    deleteComment(commentId, keywordName) {
+      const password = prompt('댓글 삭제를 위해 설정했던 비밀번호 4자리를 입력해주세요:');
+      if (password === null) return; // 취소 클릭 시
+
+      if (password.length !== 4) {
+        alert('비밀번호는 4자리여야 합니다.');
+        return;
+      }
+
+      fetch('/api/comments/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          comment_id: commentId,
+          password: password
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          this.fetchComments(keywordName);
+          this.showToastAlert({
+            category: 'content',
+            customMsg: '댓글이 정상적으로 삭제되었습니다.'
+          });
+        } else {
+          alert(data.error || '비밀번호가 일치하지 않습니다.');
+        }
+      })
+      .catch(err => {
+        console.error('댓글 삭제 에러:', err);
+      });
+    }
+
+    openMyInfoModal() {
+      if (!this.myInfoModal) return;
+
+      const nickname = localStorage.getItem('my_nickname') || '-';
+      let myComments = [];
+      try {
+        myComments = JSON.parse(localStorage.getItem('my_comments')) || [];
+      } catch (e) {
+        console.error('Failed to parse my_comments:', e);
+      }
+
+      if (this.myInfoNickname) {
+        this.myInfoNickname.textContent = nickname;
+      }
+      if (this.myInfoCommentCount) {
+        this.myInfoCommentCount.textContent = myComments.length;
+      }
+
+      this.renderMyComments(myComments);
+      this.myInfoModal.showModal();
+    }
+
+    renderMyComments(myComments) {
+      if (!this.myInfoCommentsList) return;
+
+      this.myInfoCommentsList.innerHTML = '';
+
+      if (myComments.length === 0) {
+        this.myInfoCommentsList.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px;">아직 작성한 댓글이 없습니다.</div>';
+        return;
+      }
+
+      // Sort comments by timestamp desc (newest first)
+      const sortedComments = [...myComments].sort((a, b) => b.timestamp - a.timestamp);
+
+      sortedComments.forEach(comment => {
+        const date = new Date(comment.timestamp);
+        const timeStr = date.toLocaleDateString('ko-KR', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+
+        const item = document.createElement('div');
+        item.className = 'my-comment-item';
+        item.style.background = 'var(--card-item-bg)';
+        item.style.border = '1px solid var(--panel-border)';
+        item.style.borderRadius = '8px';
+        item.style.padding = '12px';
+        item.style.display = 'flex';
+        item.style.flexDirection = 'column';
+        item.style.gap = '6px';
+        item.style.textAlign = 'left';
+
+        item.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <a class="my-comment-keyword-link" style="font-size: 12px; color: var(--neon-purple); font-weight: 700; cursor: pointer; text-decoration: none;">#${comment.keyword}</a>
+            <button class="my-comment-del-btn" style="background: none; border: 1px solid rgba(255, 75, 154, 0.25); color: var(--neon-pink); cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 4px; transition: all 0.2s;">삭제</button>
+          </div>
+          <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.4; word-break: break-all;">${comment.content}</div>
+          <div style="font-size: 10px; color: var(--text-muted); text-align: right;">${timeStr}</div>
+        `;
+
+        // Bind keyword link click
+        const link = item.querySelector('.my-comment-keyword-link');
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          this.myInfoModal.close();
+          // Find keyword in TrendEngine keywords
+          const matchedKw = global.TrendEngine.keywords.find(k => k.name === comment.keyword);
+          if (matchedKw) {
+            this.selectKeyword(matchedKw.id);
+          } else {
+            // If not found in current rankings list, open drawer anyway using custom name
+            this.openCommentDrawer(comment.keyword);
+          }
+        });
+
+        // Bind direct delete click
+        const delBtn = item.querySelector('.my-comment-del-btn');
+        delBtn.addEventListener('click', () => {
+          this.deleteMyComment(comment.id, comment.password, comment.keyword);
+        });
+
+        this.myInfoCommentsList.appendChild(item);
+      });
+    }
+
+    deleteMyComment(commentId, password, keywordName) {
+      if (!confirm('이 댓글을 삭제하시겠습니까?')) return;
+
+      fetch('/api/comments/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          comment_id: commentId,
+          password: password
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success || data.error === '댓글을 찾을 수 없습니다.') {
+          // Remove from localStorage
+          let myComments = [];
+          try {
+            myComments = JSON.parse(localStorage.getItem('my_comments')) || [];
+          } catch (e) {
+            console.error('Failed to parse my_comments:', e);
+          }
+          myComments = myComments.filter(c => c.id !== commentId);
+          localStorage.setItem('my_comments', JSON.stringify(myComments));
+
+          // Update My Info display
+          const nickname = localStorage.getItem('my_nickname') || '-';
+          if (this.myInfoNickname) {
+            this.myInfoNickname.textContent = nickname;
+          }
+          if (this.myInfoCommentCount) {
+            this.myInfoCommentCount.textContent = myComments.length;
+          }
+          this.renderMyComments(myComments);
+
+          // If current comment drawer is open for this keyword, fetch comments to update
+          if (this.commentDrawer && this.commentDrawer.classList.contains('open') && this.drawerKeywordName.textContent === keywordName) {
+            this.fetchComments(keywordName);
+          }
+
+          this.showToastAlert({
+            category: 'content',
+            customMsg: '댓글이 성공적으로 삭제되었습니다.'
+          });
+        } else {
+          alert(data.error || '댓글 삭제에 실패했습니다.');
+        }
+      })
+      .catch(err => {
+        console.error('댓글 삭제 에러:', err);
+      });
+    }
+
+    clearMyInfo() {
+      if (!confirm('닉네임 정보와 내가 작성한 모든 댓글 내역을 초기화하시겠습니까? (서버의 댓글 자체는 삭제되지 않습니다.)')) return;
+
+      localStorage.removeItem('my_comments');
+      localStorage.removeItem('my_nickname');
+
+      if (this.myInfoNickname) {
+        this.myInfoNickname.textContent = '-';
+      }
+      if (this.myInfoCommentCount) {
+        this.myInfoCommentCount.textContent = '0';
+      }
+      if (this.myInfoCommentsList) {
+        this.myInfoCommentsList.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px;">아직 작성한 댓글이 없습니다.</div>';
+      }
+
+      this.showToastAlert({
+        category: 'social',
+        customMsg: '나의 정보가 성공적으로 초기화되었습니다.'
+      });
     }
   }
 

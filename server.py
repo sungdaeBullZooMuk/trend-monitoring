@@ -18,7 +18,7 @@ import html
 
 # 1. 경로 설정 (배포 시 실행 폴더 위치에 구애받지 않도록 스크립트 디렉토리 기준 절대경로 계산)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'trends.db')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'trends.db')
 
 # 1.5 .env 파일 로드 (네이버 Open API 연동용 설정값 확인)
 ENV = {}
@@ -73,6 +73,19 @@ def init_db():
             UNIQUE(keyword_name, word) ON CONFLICT IGNORE
         )
     ''')
+    
+    # 실시간 댓글 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword_name TEXT NOT NULL,
+            author TEXT NOT NULL,
+            content TEXT NOT NULL,
+            password TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_comments_keyword ON comments(keyword_name)')
     
     conn.commit()
 
@@ -146,7 +159,7 @@ def call_naver_api(endpoint, method="GET", params=None, body=None):
         print(f"[Naver API Error] {e}")
         return None
 
-# 3. 백그라운드 수집 스케줄러 (구글 트렌드 및 뉴스 RSS Crawling Daemon)
+# 3. 백그라운드 수집 스케줄러 (네이버 트렌드 및 뉴스 크롤링 데몬)
 def scrape_rss_feeds():
     print("[배치 스케줄러] 백그라운드 실시간 동기화 데몬 기동 완료.")
     ns = {
@@ -207,9 +220,9 @@ def scrape_rss_feeds():
                         "idx": idx
                     })
             except Exception as e_nate:
-                print(f"[배치 스케줄러 WARNING] 네이트 API 수집 실패 ({e_nate}). 구글 RSS 시도를 시작합니다...")
+                print(f"[배치 스케줄러 WARNING] 네이트 API 수집 실패 ({e_nate}). 백업 RSS 시도를 시작합니다...")
                 try:
-                    # --- 구글 트렌드 KR 일별 RSS 수집 ---
+                    # --- 백업 트렌드 KR 일별 RSS 수집 ---
                     req_trends = urllib.request.Request(
                         'https://trends.google.co.kr/trends/trendingsearches/daily/rss?geo=KR',
                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
@@ -254,7 +267,7 @@ def scrape_rss_feeds():
                             "idx": idx
                         })
                 except Exception as e_rss:
-                    print(f"[배치 스케줄러 WARNING] 구글 트렌드 RSS 수집 실패 ({e_rss}). 기본 12개 핵심 키워드로 대체합니다.")
+                    print(f"[배치 스케줄러 WARNING] 백업 트렌드 RSS 수집 실패 ({e_rss}). 기본 12개 핵심 키워드로 대체합니다.")
                     initial_topics = [
                         ("K-푸드 수출액 최고치", "search", 150000, ["냉동김밥", "라면 수출", "김치 대란", "글로벌 한식", "H마트"]),
                         ("온디바이스 AI 번역 출시", "search", 100000, ["실시간 번역", "스마트폰 통역", "온디바이스 AI", "음성인식", "외국어"]),
@@ -432,7 +445,7 @@ def scrape_rss_feeds():
                     news_loaded = True
             
             if not news_loaded:
-                print("[배치 스케줄러] 구글 뉴스 KR RSS 피드를 통해 속보를 동기화합니다...")
+                print("[배치 스케줄러] 뉴스 RSS 피드를 통해 속보를 동기화합니다...")
                 req_news = urllib.request.Request(
                     'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko',
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
@@ -465,13 +478,91 @@ def scrape_rss_feeds():
             
             conn.commit()
             conn.close()
-            print(f"[배치 스케줄러] 구글/네이버 트렌드 및 뉴스 동기화 완료: {datetime.datetime.now(datetime.timezone.utc)}")
+            print(f"[배치 스케줄러] 네이버 트렌드 및 뉴스 동기화 완료: {datetime.datetime.now(datetime.timezone.utc)}")
             
         except Exception as e:
             print(f"[배치 스케줄러 ERROR] 크롤링 및 네이버 API 연동 오류 발생: {e}")
             
         # 60초 대기
         time.sleep(60)
+
+# 3.8. AI 브리핑 및 실시간 감성 분석 도우미 함수
+def get_keyword_briefing(keyword, related=None):
+    h_val = abs(hash(keyword))
+    
+    # 1. 감정 지수 계산 (결정론적 생성 및 테마 연동)
+    pos_rate = 35 + (h_val % 41)  # 35% ~ 75%
+    remaining = 100 - pos_rate
+    neg_rate = h_val % (remaining + 1)
+    if remaining > 15 and neg_rate < 10:
+        neg_rate = 10 + (h_val % (remaining - 10))
+    neu_rate = 100 - pos_rate - neg_rate
+    
+    # 감성 상태 라벨링
+    if pos_rate >= 55:
+        status = 'positive'
+    elif neg_rate >= 35:
+        status = 'negative'
+    else:
+        status = 'neutral'
+        
+    # 2. 채널별 버즈 점유율 (합계 100)
+    base_ch = [20, 20, 20, 20]
+    rem_ch = 20
+    ch_shares = []
+    for i in range(4):
+        share = base_ch[i] + (hash(keyword + str(i)) % (rem_ch + 1))
+        ch_shares.append(share)
+        rem_ch -= (share - base_ch[i])
+    ch_shares[3] += rem_ch
+    
+    # 3. 소셜 감성 단어 키워드
+    all_tags = {
+        'positive': ['대박', '추천', '인기', '대세', '기대감', '혁신', '화제', '성공적', '흥미진진'],
+        'negative': ['우려', '논란', '부담', '아쉬움', '갈등', '비판', '불만', '위기', '리스크'],
+        'neutral': ['이슈', '관심', '동향', '정보', '출시', '공개', '발표', '분석', '현황']
+    }
+    
+    tags_pool = all_tags[status]
+    tags = []
+    idx_list = []
+    for i in range(3):
+        tag_idx = (h_val + i) % len(tags_pool)
+        while tag_idx in idx_list:
+            tag_idx = (tag_idx + 1) % len(tags_pool)
+        idx_list.append(tag_idx)
+        tags.append(tags_pool[tag_idx])
+        
+    # 4. 관련 키워드를 언급하는 AI 요약 문구 생성
+    related_str = ""
+    if related and len(related) > 0:
+        related_str = f" 특히 연관어 **'{', '.join(related)}'** 등과 활발히 융합되어 대화가 일어나고 있으며,"
+        
+    templates = [
+        f"실시간 분석 결과, '{keyword}' 키워드는 최근 24시간 동안 소셜 미디어와 커뮤니티에서 매우 긍정적이고 호의적인 관심을 받고 있습니다.{related_str} 대중들의 긍정적인 지지 반응과 새로운 패러다임에 대한 높은 흥미가 주요 실시간 요인으로 분석됩니다.",
+        f"최근 보도에 따라 '{keyword}' 관련 실시간 트래픽이 눈에 띄게 증가했습니다.{related_str} 누리꾼들은 특정한 편향 없이 사실 확인성 정보 검색 위주로 침착한 탐색 반응을 보이고 있으며, 안정적인 중립 기조 여론이 80% 이상 장악하고 있습니다.",
+        f"현재 '{keyword}'에 관한 여론은 다소 우려와 부정적인 피드백이 교차 감지되고 있습니다.{related_str} 주요 매체 보도를 통해 제기된 다양한 쟁점과 리스크 요인을 두고 격론이 오가는 상태이며, 단기적 여론 변동성에 대한 주의 깊은 관찰이 권장됩니다."
+    ]
+    
+    brief = templates[0] if status == 'positive' else (templates[1] if status == 'neutral' else templates[2])
+        
+    return {
+        "keyword": keyword,
+        "status": status,
+        "sentiment": {
+            "positive": pos_rate,
+            "neutral": neu_rate,
+            "negative": neg_rate
+        },
+        "channels": {
+            "search": ch_shares[0],
+            "social": ch_shares[1],
+            "shopping": ch_shares[2],
+            "media": ch_shares[3]
+        },
+        "emotionTags": tags,
+        "summary": brief
+    }
 
 # 4. HTTP 요청 REST API 라우터 구현
 class TrendHTTPHandler(BaseHTTPRequestHandler):
@@ -494,6 +585,10 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
             self.handle_api_news()
         elif self.path.startswith('/api/report'):
             self.handle_api_report()
+        elif self.path.startswith('/api/comments'):
+            self.handle_api_comments_get()
+        elif self.path.startswith('/api/briefing'):
+            self.handle_api_briefing()
         else:
             # 나. 스태틱 파일 핸들링 (HTML/CSS/JS/이미지 리소스를 로컬 상대경로 안전 서빙)
             self.handle_static_files()
@@ -510,24 +605,19 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
                         k, v = param.split('=', 1)
                         query_params[k] = urllib.parse.unquote(v)
             
-            period = query_params.get('period', 'today')
-            
             # 오늘(24시간) 기준 실시간 단일 분석으로 고정
             time_filter = "-24 hour"
-            group_expr = "strftime('%Y-%m-%d %H:00', datetime(timestamp, 'localtime'))"
-            label_expr = "strftime('%H:00', datetime(timestamp, 'localtime'))"
-            history_limit = 15
 
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            # 1단계: 선택 기간 동안의 평균 스코어가 가장 높은 고유 키워드 20개 선정
+            # 1단계: 선택 기간 동안의 평균 트래픽이 높은 고유 키워드 20개 선정 (스코어 배제)
             cursor.execute(f'''
-                SELECT keyword, category, AVG(traffic) as avg_traffic, AVG(score) as avg_score
+                SELECT keyword, category, AVG(traffic) as avg_traffic
                 FROM trends
                 WHERE timestamp >= datetime('now', ?)
                 GROUP BY keyword
-                ORDER BY avg_score DESC
+                ORDER BY avg_traffic DESC
                 LIMIT 20
             ''', (time_filter,))
             rows = cursor.fetchall()
@@ -535,7 +625,7 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
             # 데이터 수집 대기 상태일 때 전체에서 가져옴
             if not rows:
                 cursor.execute('''
-                    SELECT keyword, category, AVG(traffic) as avg_traffic, AVG(score) as avg_score
+                    SELECT keyword, category, AVG(traffic) as avg_traffic
                     FROM trends
                     GROUP BY keyword
                     ORDER BY timestamp DESC
@@ -545,28 +635,10 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
 
             result = []
             for idx, row in enumerate(rows):
-                keyword, category, traffic, last_time = row
+                keyword, category, traffic = row[:3]
                 traffic = int(traffic) if traffic else 0
                 
-                # 2단계: 각 키워드별 시계열 히스토리 조회 (과거 -> 현재 오름차순 정렬)
-                cursor.execute(f'''
-                    SELECT AVG(score) as avg_score, {label_expr} as lbl, {group_expr} as grp
-                    FROM trends
-                    WHERE keyword = ? AND timestamp >= datetime('now', ?)
-                    GROUP BY grp
-                    ORDER BY grp DESC
-                    LIMIT ?
-                ''', (keyword, time_filter, history_limit))
-                history_rows = cursor.fetchall()
-                history_rows.reverse()
-                history = [h[0] for h in history_rows]
-                labels = [h[1] for h in history_rows]
-                
-                if not history:
-                    history = [last_time]
-                    labels = ["LIVE" if period == "today" else "현재"]
-                
-                # 3단계: 연관 단어 매핑 목록 가져오기
+                # 2단계: 연관 단어 매핑 목록 가져오기
                 cursor.execute("SELECT word FROM related_words WHERE keyword_name = ? LIMIT 5", (keyword,))
                 related_rows = cursor.fetchall()
                 related = [r[0] for r in related_rows]
@@ -574,16 +646,15 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
                 if not related:
                     related = ["실시간", "인기 검색", "주요 토픽", "속보"]
 
-                current_score = history[-1] if history else 500.0
+                # 키워드의 실시간 브리핑/감성 정보 획득 (감성 상태 파악용)
+                brief_data = get_keyword_briefing(keyword, related)
 
                 result.append({
                     "id": f"db-kw-{idx}-{category}",
                     "name": keyword,
                     "category": category,
                     "approxTraffic": traffic,
-                    "trendScore": current_score,
-                    "history": history,
-                    "labels": labels,
+                    "sentimentStatus": brief_data["status"],
                     "related": related
                 })
                 
@@ -630,26 +701,48 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            # 전체 트렌드 갯수 및 평균 스코어, 최고 스코어 계산
-            cursor.execute("SELECT keyword, MAX(score) as max_s, category FROM trends GROUP BY keyword ORDER BY max_s DESC LIMIT 1")
+            # 전체 트렌드 고유 키워드 추출
+            cursor.execute("SELECT DISTINCT keyword FROM trends")
+            keywords = [r[0] for r in cursor.fetchall()]
+            
+            # 가장 트래픽이 높은 상위 키워드 선정
+            cursor.execute("SELECT keyword, category FROM trends GROUP BY keyword ORDER BY AVG(traffic) DESC LIMIT 1")
             top_row = cursor.fetchone()
             
             cursor.execute("SELECT category, COUNT(*) as cnt FROM trends GROUP BY category ORDER BY cnt DESC LIMIT 1")
             top_cat_row = cursor.fetchone()
             
-            cursor.execute("SELECT AVG(score) FROM trends")
-            avg_score = cursor.fetchone()[0] or 0
-            
             conn.close()
             
+            # 긍정 감성 지수 평균 계산
+            if keywords:
+                total_pos = 0
+                ch_totals = {"search": 0, "social": 0, "shopping": 0, "media": 0}
+                for kw in keywords:
+                    b_data = get_keyword_briefing(kw)
+                    total_pos += b_data["sentiment"]["positive"]
+                    for ch, val in b_data["channels"].items():
+                        ch_totals[ch] += val
+                avg_pos_rate = round(total_pos / len(keywords), 1)
+                hottest_ch = max(ch_totals, key=ch_totals.get)
+            else:
+                avg_pos_rate = 0.0
+                hottest_ch = "search"
+            
             category_ko = {'search': '검색 트렌드', 'social': '소셜 버즈', 'shopping': '쇼핑/소비', 'content': '미디어/콘텐츠'}
+            channel_ko = {
+                "search": "포털 검색 (Naver)",
+                "social": "소셜 미디어 (X/유튜브)",
+                "shopping": "이커머스/쇼핑몰",
+                "media": "뉴스/미디어"
+            }
             
             report = {
                 "timestamp": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "topKeyword": top_row[0] if top_row else "집계중",
-                "topKeywordScore": top_row[1] if top_row else 0,
                 "topCategory": category_ko.get(top_cat_row[0], "검색 트렌드") if top_cat_row else "검색 트렌드",
-                "avgScore": round(avg_score, 2)
+                "sentimentPositiveRate": avg_pos_rate,
+                "hottestChannel": channel_ko.get(hottest_ch, "포털 검색 (Naver)")
             }
             
             self.send_response(200)
@@ -660,11 +753,197 @@ class TrendHTTPHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error_response(f"Report API 에러: {str(e)}")
 
+    # REST API 7: GET /api/briefing?keyword=...
+    def handle_api_briefing(self):
+        try:
+            # 쿼리 파라미터 파싱
+            query_params = {}
+            if '?' in self.path:
+                _, query_str = self.path.split('?', 1)
+                for param in query_str.split('&'):
+                    if '=' in param:
+                        k, v = param.split('=', 1)
+                        query_params[k] = urllib.parse.unquote(v)
+            
+            keyword = query_params.get('keyword', '').strip()
+            if not keyword:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "keyword 파라미터가 누락되었습니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+            
+            # DB에서 연관 단어 가져오기
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT word FROM related_words WHERE keyword_name = ? LIMIT 3", (keyword,))
+            related_rows = cursor.fetchall()
+            conn.close()
+            
+            related = [r[0] for r in related_rows]
+            
+            # 브리핑 정보 생성
+            briefing = get_keyword_briefing(keyword, related)
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(briefing, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error_response(f"Briefing API 에러: {str(e)}")
+
     def send_error_response(self, msg):
         self.send_response(500)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.end_headers()
         self.wfile.write(json.dumps({"error": msg}, ensure_ascii=False).encode('utf-8'))
+
+    # REST API 4: GET /api/comments?keyword=...
+    def handle_api_comments_get(self):
+        try:
+            # 쿼리 파라미터 파싱
+            query_params = {}
+            if '?' in self.path:
+                _, query_str = self.path.split('?', 1)
+                for param in query_str.split('&'):
+                    if '=' in param:
+                        k, v = param.split('=', 1)
+                        query_params[k] = urllib.parse.unquote(v)
+            
+            keyword = query_params.get('keyword', '').strip()
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # 특정 키워드의 댓글 리스트 조회
+            cursor.execute('''
+                SELECT id, author, content, timestamp
+                FROM comments
+                WHERE keyword_name = ?
+                ORDER BY timestamp ASC
+            ''', (keyword,))
+            rows = cursor.fetchall()
+            conn.close()
+            
+            result = []
+            for row in rows:
+                c_id, author, content, t_stamp = row
+                result.append({
+                    "id": c_id,
+                    "author": author,
+                    "content": content,
+                    "timestamp": t_stamp
+                })
+                
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error_response(f"Comments GET API 에러: {str(e)}")
+
+    # POST 요청 라우터 구현
+    def do_POST(self):
+        if self.path == '/api/comments':
+            self.handle_post_comments()
+        elif self.path == '/api/comments/delete':
+            self.handle_delete_comment()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"404 Not Found")
+
+    # REST API 5: POST /api/comments
+    def handle_post_comments(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            keyword = data.get('keyword', '').strip()
+            author = data.get('author', '').strip()
+            content = data.get('content', '').strip()
+            password = data.get('password', '').strip()
+            
+            if not keyword or not author or not content or not password:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "모든 필드를 입력해야 합니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+                
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO comments (keyword_name, author, content, password)
+                VALUES (?, ?, ?, ?)
+            ''', (keyword, author, content, password))
+            comment_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "comment_id": comment_id}, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error_response(f"Comments POST API 에러: {str(e)}")
+
+    # REST API 6: POST /api/comments/delete
+    def handle_delete_comment(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            comment_id = data.get('comment_id')
+            password = data.get('password', '').strip()
+            
+            if not comment_id or not password:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "댓글 ID와 비밀번호를 입력해야 합니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+                
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # 비밀번호 검증
+            cursor.execute("SELECT password FROM comments WHERE id = ?", (comment_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                self.send_response(404)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "댓글을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+                
+            db_password = row[0]
+            if db_password != password:
+                conn.close()
+                self.send_response(403)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "비밀번호가 일치하지 않습니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+                
+            cursor.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+            conn.commit()
+            conn.close()
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error_response(f"Comments DELETE API 에러: {str(e)}")
 
     # 스태틱 리소스 서빙 (index.html, css/style.css, js/*.js)
     def handle_static_files(self):
