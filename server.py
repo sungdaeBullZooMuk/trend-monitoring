@@ -27,6 +27,14 @@ except Exception as e_ssl:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'trends.db')
 
+# SQLite 전역 바인딩 및 타임아웃(timeout=30.0) 자동 설정 (Lock 대기 대폭 완화)
+_original_sqlite_connect = sqlite3.connect
+def db_connect_with_timeout(*args, **kwargs):
+    if 'timeout' not in kwargs:
+        kwargs['timeout'] = 30.0
+    return _original_sqlite_connect(*args, **kwargs)
+sqlite3.connect = db_connect_with_timeout
+
 # 1.5 .env 파일 로드 (네이버 Open API 연동용 설정값 확인)
 ENV = {}
 env_path = os.path.join(BASE_DIR, '.env')
@@ -174,6 +182,7 @@ def scrape_rss_feeds():
     }
     
     while True:
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -484,11 +493,16 @@ def scrape_rss_feeds():
             cursor.execute("DELETE FROM trends WHERE timestamp < datetime('now', '-365 day')")
             
             conn.commit()
-            conn.close()
             print(f"[배치 스케줄러] 네이버 트렌드 및 뉴스 동기화 완료: {datetime.datetime.now(datetime.timezone.utc)}")
             
         except Exception as e:
             print(f"[배치 스케줄러 ERROR] 크롤링 및 네이버 API 연동 오류 발생: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             
         # 60초 대기
         time.sleep(60)
