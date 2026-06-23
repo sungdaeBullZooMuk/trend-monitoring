@@ -426,68 +426,71 @@ def scrape_rss_feeds():
                         )
 
             # 3단계: 뉴스 피드 동기화 (네이버 뉴스 API 혹은 구글 뉴스 RSS 폴백)
-            cursor.execute("DELETE FROM news")
-            news_loaded = False
-            
-            if client_id and client_secret and keywords_list:
-                print("[배치 스케줄러] 네이버 뉴스 API를 사용해 실시간 관련 뉴스를 동기화합니다...")
-                news_count = 0
-                for k_info in keywords_list[:5]: # 상위 5개 주요 검색어 위주로 뉴스 검색
-                    kw = k_info["keyword"]
-                    news_data = call_naver_api("https://openapi.naver.com/v1/search/news.json", params={
-                        "query": kw,
-                        "display": 3,
-                        "sort": "sim"
-                    })
-                    if news_data and "items" in news_data:
-                        for item in news_data["items"]:
-                            title = item.get("title", "")
-                            # Naver API 뉴스 타이틀에 포함된 HTML 태그 (<b> 등) 제거
-                            title = re.sub(r'<[^>]+>', '', title)
-                            title = html.unescape(title)
-                            link = item.get("link", "")
-                            pub_date = item.get("pubDate", "")
-                            
-                            cursor.execute(
-                                "INSERT INTO news (title, source, link, pub_date) VALUES (?, ?, ?, ?)",
-                                (title, "네이버뉴스", link, pub_date)
-                            )
-                            news_count += 1
-                            if news_count >= 15:
-                                break
-                    if news_count >= 15:
-                        break
-                if news_count > 0:
-                    news_loaded = True
-            
-            if not news_loaded:
-                print("[배치 스케줄러] 뉴스 RSS 피드를 통해 속보를 동기화합니다...")
-                req_news = urllib.request.Request(
-                    'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko',
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                )
-                with urllib.request.urlopen(req_news, timeout=10) as response:
-                    news_xml = response.read()
-                    
-                news_root = ET.fromstring(news_xml)
-                news_items = news_root.findall('.//item')
+            try:
+                cursor.execute("DELETE FROM news")
+                news_loaded = False
                 
-                for news in news_items[:15]:
-                    title = news.find('title').text
-                    link = news.find('link').text
-                    pub_date = news.find('pubDate').text
-                    
-                    title = html.unescape(title)
-                    parts = title.split(' - ')
-                    source = "속보"
-                    if len(parts) > 1:
-                        source = parts.pop()
-                        title = ' - '.join(parts)
-                        
-                    cursor.execute(
-                        "INSERT INTO news (title, source, link, pub_date) VALUES (?, ?, ?, ?)",
-                        (title, source, link, pub_date)
+                if client_id and client_secret and keywords_list:
+                    print("[배치 스케줄러] 네이버 뉴스 API를 사용해 실시간 관련 뉴스를 동기화합니다...")
+                    news_count = 0
+                    for k_info in keywords_list[:5]: # 상위 5개 주요 검색어 위주로 뉴스 검색
+                        kw = k_info["keyword"]
+                        news_data = call_naver_api("https://openapi.naver.com/v1/search/news.json", params={
+                            "query": kw,
+                            "display": 3,
+                            "sort": "sim"
+                        })
+                        if news_data and "items" in news_data:
+                            for item in news_data["items"]:
+                                title = item.get("title", "")
+                                # Naver API 뉴스 타이틀에 포함된 HTML 태그 (<b> 등) 제거
+                                title = re.sub(r'<[^>]+>', '', title)
+                                title = html.unescape(title)
+                                link = item.get("link", "")
+                                pub_date = item.get("pubDate", "")
+                                
+                                cursor.execute(
+                                    "INSERT INTO news (title, source, link, pub_date) VALUES (?, ?, ?, ?)",
+                                    (title, "네이버뉴스", link, pub_date)
+                                )
+                                news_count += 1
+                                if news_count >= 15:
+                                    break
+                        if news_count >= 15:
+                            break
+                    if news_count > 0:
+                        news_loaded = True
+                
+                if not news_loaded:
+                    print("[배치 스케줄러] 뉴스 RSS 피드를 통해 속보를 동기화합니다...")
+                    req_news = urllib.request.Request(
+                        'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko',
+                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                     )
+                    with urllib.request.urlopen(req_news, timeout=10) as response:
+                        news_xml = response.read()
+                        
+                    news_root = ET.fromstring(news_xml)
+                    news_items = news_root.findall('.//item')
+                    
+                    for news in news_items[:15]:
+                        title = news.find('title').text
+                        link = news.find('link').text
+                        pub_date = news.find('pubDate').text
+                        
+                        title = html.unescape(title)
+                        parts = title.split(' - ')
+                        source = "속보"
+                        if len(parts) > 1:
+                            source = parts.pop()
+                            title = ' - '.join(parts)
+                            
+                        cursor.execute(
+                            "INSERT INTO news (title, source, link, pub_date) VALUES (?, ?, ?, ?)",
+                            (title, source, link, pub_date)
+                        )
+            except Exception as e_news:
+                print(f"[배치 스케줄러 WARNING] 뉴스 피드 동기화 실패 (우회 진행): {e_news}")
             
             # --- 다. 1년이 지난 오랜 로그 청소 (디스크 낭비 방지) ---
             cursor.execute("DELETE FROM trends WHERE timestamp < datetime('now', '-365 day')")
