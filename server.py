@@ -224,7 +224,7 @@ def scrape_rss_feeds():
                 try:
                     # --- 백업 트렌드 KR 일별 RSS 수집 ---
                     req_trends = urllib.request.Request(
-                        'https://trends.google.co.kr/trends/trendingsearches/daily/rss?geo=KR',
+                        'https://trends.google.com/trends/trendingsearches/daily/rss?geo=KR',
                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                     )
                     with urllib.request.urlopen(req_trends, timeout=10) as response:
