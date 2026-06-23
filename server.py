@@ -15,6 +15,13 @@ import re
 import threading
 import time
 import html
+import ssl
+
+# SSL 인증서 검증 강제 우회 설정 (해외 배포 서버 대비)
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except Exception as e_ssl:
+    pass
 
 # 1. 경로 설정 (배포 시 실행 폴더 위치에 구애받지 않도록 스크립트 디렉토리 기준 절대경로 계산)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
